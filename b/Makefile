@@ -13,6 +13,12 @@ everything: $(BIN)
 	mkdosfs -F 12 /dev/loop0
 	losetup -d /dev/loop0
 	dd if=$(BIN) ibs=512 skip=4096 of=a.img obs=512 seek=0 count=1 conv=notrunc
+	losetup /dev/loop0 a.img
+	mount -t msdos -o "fat=12" /dev/loop0 /mnt/floppy/
+	echo "abc" >> app.bin
+	cp app.bin /mnt/floppy/
+	umount /mnt/floppy
+	losetup -d /dev/loop0
 
 $(BIN): $(OBJ) $(LDScript)
 	ld -o $(BIN) $(OBJ) -T$(LDScript)
@@ -23,5 +29,5 @@ $(OBJ): $(SRC)
 	#ndisasm -o 0x7c00 $(TEXT) > $(DIS)
 
 clean:
-	rm -f $(BIN) $(OBJ) $(DIS) $(TEXT) a.img
+	rm -f $(BIN) $(OBJ) $(DIS) $(TEXT) a.img app.bin
 
