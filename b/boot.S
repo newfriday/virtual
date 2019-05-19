@@ -217,12 +217,10 @@ label_file_loaded:
     # 显示字符串
     call    DispStr
 
-loop1:
-    jmp     loop1
-
 #########################################################
     # 跳转到0x90100地址处，执行app.bin的代码
-    #jmp    $BaseOfLoader:$OffsetOfLoader
+label_go_app:
+    ljmp    $BaseOfLoader, $OffsetOfLoader
 #########################################################
 
 #----------------------------------------------------------------------------
