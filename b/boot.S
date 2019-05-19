@@ -8,7 +8,8 @@ _start:
     nop
     # BS_OEMName 厂商名字
     .ascii  "ForrestY"
-    # BS_BytsPerSec 每扇区字节数
+    # BPB_BytsPerSec 每扇区字节数
+BPB_BytsPerSec:
     .word   512
     # BPB_SecPerClus 每簇扇区数
     .byte   1
@@ -52,7 +53,24 @@ label_init:
     movw	%ax, %ds
     movw	%ax, %es
     movw	%ax, %ss
-    movw    $0x180, %sp
+    movw    $BaseOfStack, %sp
+
+    # 清屏
+    # AH = 6,  AL = 0h
+    movw    $0x600, %ax
+    # 黑底白字(BL = 07h)
+    movw    $0x700, %bx
+    # 左上角: (0, 0)
+    movw    $0, %cx
+    # 右下角: (80, 50)
+    movw    $0x184f, %dx
+    # int 10h
+    int     $0x10
+
+    # "Booting  "
+    # 显示字符串
+    movb    $0, %dh
+    call    DispStr
 
     # reset floppy: AH=0,DL=drive number
     xorb    %ah, %ah
@@ -144,11 +162,68 @@ loop0:
 
 # 找到 LOADER.BIN 后便来到这里继续
 label_filename_found:
-    # "Ready.   "
+    movw    $RootDirSectors, %ax
+    andw    $0xffe0, %di
+    addw    $0x1a, %di
+    # di指向文件开始簇号
+    movw    %es:(%di), %cx
+    # 将文件起始簇号取出，入堆栈
+    pushw   %cx
+    addw    %ax, %cx
+    addw    $DeltaSectorNo, %cx
+    # 计算文件在整个磁盘的簇号
+    # clusterid = RootDirSectors + DeltaSectorNo + FstClus
+    movw    $BaseOfLoader, %ax
+    movw    %ax, %es
+    movw    $OffsetOfLoader, %bx
+    # es:bx 指向从磁盘拷贝的根目录扇区
+    movw    %cx, %ax
+    # ax存放扇区号
+
+label_goon_loading_file:
+    # 加载一个扇区前，先打印一个.到屏幕
+    pushw   %ax
+    pushw   %bx
+    movb    $0xe, %ah
+    # '.' = ascii 0x2e
+    movb    $0x2e, %al
+    movb    $0xf, %bl
+    int     $0x10
+    popw    %bx
+    popw    %ax
+    # 打印结束
+
+label_load_1sector:
+    movb    $1, %cl
+    # 把app.bin文件所在的扇区读到0x90100地址处
+    call    ReadSector
+    popw    %ax
+    # 获取app.bin文件在FAT表中的条目，检查什么时候结束
+    call    GetFATEntry
+    # 检查FAT表的一项为FFF，表示当前簇是最后一个簇
+    cmpw    $0xfff, %ax
+    je      label_file_loaded
+    # 保存 Sector 在 FAT 中的序号
+    pushw   %ax
+    movw    $RootDirSectors, %dx
+    addw    %dx, %ax
+    addw    $DeltaSectorNo, %ax
+    addw    BPB_BytsPerSec, %bx
+    jmp     label_goon_loading_file
+
+label_file_loaded:
+    # "Ready."
     movb    $1, %dh
+    # 显示字符串
     call    DispStr
+
 loop1:
     jmp     loop1
+
+#########################################################
+    # 跳转到0x90100地址处，执行app.bin的代码
+    #jmp    $BaseOfLoader:$OffsetOfLoader
+#########################################################
 
 #----------------------------------------------------------------------------
 # 函数名: ReadSector
@@ -213,8 +288,6 @@ bios_read_sector:
 disp_error:
     movb    $3, %dh
     call    DispStr
-loop2:
-    jmp     loop2
 
 #----------------------------------------------------------------------------
 # 函数名: DispStr
@@ -223,6 +296,7 @@ loop2:
 #   显示一个字符串, 函数开始时 dh 中应该是字符串序号(0-based)
 DispStr:
     movw    $MessageLength, %ax
+    # ax = ax * dh
     mul     %dh
     add     $BootMessage, %ax
     movw    %ax, %bp
@@ -233,6 +307,70 @@ DispStr:
     movw    $0xc, %bx
     movb    $0, %dl
     int     $0x10
+    ret
+
+#----------------------------------------------------------------------------
+# 函数名: GetFATEntry
+#----------------------------------------------------------------------------
+# 作用:
+#   找到序号为 ax 的 Sector 在 FAT 中的条目, 结果放在 ax 中
+#   需要注意的是, 中间需要读 FAT 的扇区到 es:bx 处, 所以函数一开始保存了 es 和 bx
+GetFATEntry:
+    pushw   %es
+    pushw   %bx
+    pushw   %ax
+    movw    $BaseOfLoader, %ax
+    #  | 在 BaseOfLoader 后面留出 4K 空间用于存放 FAT
+    subw    $0x100, %ax
+    movw    %ax, %es
+    popw    %ax
+    movb    $0, bOdd
+    movw    $3, %bx
+    # dx:ax = ax * 3
+    mulw    %bx
+    movw    $2, %bx
+    # dx:ax / 2  ==>  ax <- 商, dx <- 余数
+    divw    %bx
+    cmpw    $0, %dx
+    jz      label_even
+    movb    $1, bOdd
+#偶数
+label_even:
+    # 现在 ax 中是 FATEntry 在 FAT 中的偏移量,下面来
+    # 计算 FATEntry 在哪个扇区中(FAT占用不止一个扇区)
+    xorw    %dx, %dx
+    movw    BPB_BytsPerSec, %bx
+    # dx:ax / BPB_BytsPerSec
+    # ax <- 商 (FATEntry 所在的扇区相对于 FAT 的扇区号)
+    # dx <- 余数 (FATEntry 在扇区内的偏移)
+    divw    %bx
+    pushw   %dx
+    # bx <- 0 于是, es:bx = (BaseOfLoader - 100):00
+    movw    $0, %bx
+    # 此句之后的 ax 就是 FATEntry 所在的扇区号
+    addw    $SectorNoOfFAT1, %ax
+    movb    $2, %cl
+    # 读取 FATEntry 所在的扇区,第一次肯定是从第2个扇区开始读,
+    # 一次读两个, 避免在边界发生错误
+    # 因为一个 FATEntry 可能跨越两个扇区
+    call    ReadSector
+label_read_2sector_done:
+    popw    %dx
+    addw    %dx, %bx
+    movw    %es:(%bx), %ax
+    movb    bOdd, %cl
+    # cmpb 指令为sub指令，ZF值记录结果，相等ZF=1
+    cmpb    $1, %cl
+    # 如果bOdd == 1，不需要右移，跳转到label_even_2
+    # 如果bOdd != 1，需要右移4bit
+    jne     label_even_2
+    shrw    $4, %ax
+label_even_2:
+    andw    $0xfff, %ax
+
+label_get_fat_entry_ok:
+    popw    %bx
+    popw    %es
     ret
 
 # -----------------------------------------------------------
@@ -268,8 +406,5 @@ Message2:
 # 9字节, 不够则用空格补齐. 序号 3
 Message3:
     .ascii  "Error    "
-BootMsg:
-BootMsg:
-    .ascii  "Hello, OS World!"
     .org 510
     .word 0xAA55
